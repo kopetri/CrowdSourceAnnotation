@@ -26,8 +26,8 @@ export default function Finish() {
     },[data])
     if (!data) return <>Loading page...</>
     if (!data["started"] && data["isDone"]) return <Redirect to={"/"} />
-    if (!data["started"]) return <Redirect to={"/"} />
-    if (!data["isDone"]) return <Redirect to={"/correlation"} />
+    if (!data["started"]) return <Redirect to={"/tutorial0"} />
+    if (!data["isDone"]) return <Redirect to={"/tutorial0"} />
     return (
         <div class="center">
             <h1 class="text-center">Finished!</h1>

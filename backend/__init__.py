@@ -11,11 +11,10 @@ def create_app(test_config=None):
     app.config.from_mapping(
         SECRET_KEY='dev',
         BATCH_SIZE=50,
-        N_PARTICIPANTS_PER_JOB=3,
+        N_ANNOTATORS_PER_JOB=3,
         RESET_DATABASE=True,
-        DATASET_PATH='G:/projects/scatterplot-learning/Experiment2/stimuli',
-        SANITY_CHECK_PATH='G:/projects/scatterplot-learning/Experiment2/sanity_check',
-        N_SANITY_CHECKS=5,
+        JOBS_FILE='./sample_data/jobs.json',
+        N_SANITY_CHECKS=1,
         PONY = {
             'provider': 'sqlite',
             'filename': os.path.join(app.instance_path, 'db.db3'),
@@ -38,12 +37,11 @@ def create_app(test_config=None):
 
     manager = BatchManager( 
         db_config=app.config['PONY'], 
-        dataset_path=app.config['DATASET_PATH'],
+        jobs_file=app.config['JOBS_FILE'],
         batch_size=app.config['BATCH_SIZE'],
         reset=app.config['RESET_DATABASE'],
-        sanity_check_path=app.config['SANITY_CHECK_PATH'],
         n_sanity_checks=app.config['N_SANITY_CHECKS'],
-        n_participants_per_job=app.config['N_PARTICIPANTS_PER_JOB']
+        n_annotators_per_job=app.config['N_ANNOTATORS_PER_JOB']
     )
 
     @app.route("/api/reset")
@@ -65,10 +63,10 @@ def create_app(test_config=None):
         
 
     @app.route("/api/submit/<user_id>/<name>", methods=['POST'])
-    def store_model(user_id, name):
+    def submit_data(user_id, name):
         if request.method == 'POST':
             data = request.get_json() # a multidict containing POST data
-            success = manager.submit(user_id, name, data)
+            success = manager.submit(user_id, str(name), data)
         return jsonify(success=success)
 
     @app.route("/api/user_id")
@@ -95,6 +93,6 @@ def create_app(test_config=None):
     def image(name):
         image = cv2.imread(manager.image(name), cv2.IMREAD_COLOR)
         _, buffer_img = cv2.imencode('.jpg', image)
-        return send_file(io.BytesIO(buffer_img),  mimetype='image/jpeg',  as_attachment=True, attachment_filename='imageA.jpg')
+        return send_file(io.BytesIO(buffer_img),  mimetype='image/jpeg',  as_attachment=True, attachment_filename='image.jpg')
 
     return app

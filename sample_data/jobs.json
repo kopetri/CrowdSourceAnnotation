@@ -1,0 +1,27 @@
+[
+    {
+        "id": 0,
+        "stimuli": ["ve0.jpg", "ve1.jpg", "ve2.jpg"],
+        "is_sanity_check": false
+    },
+    {
+        "id": 1,
+        "stimuli": ["ve0.jpg", "ve1.jpg", "ve2.jpg"],
+        "is_sanity_check": false
+    },
+    {
+        "id": 2,
+        "stimuli": ["ve0.jpg", "ve1.jpg", "ve2.jpg"],
+        "is_sanity_check": false
+    },
+    {
+        "id": 3,
+        "stimuli": ["ve0.jpg", "ve1.jpg", "ve2.jpg"],
+        "is_sanity_check": false
+    },
+    {
+        "id": 4,
+        "stimuli": ["ve4.jpg", "ve4.jpg", "ve4.jpg"],
+        "is_sanity_check": true
+    }
+]

@@ -1,30 +1,13 @@
 
 from pathlib import Path
-from re import I
 from uuid import uuid1
 import time
 from pony.orm import Database, Required, db_session, select, Json, Set, Optional
 import numpy as np
 import json
 from tqdm import tqdm
-import h5py
 
-def chamfer_distance(S1, S2):
-    def __cdist(S1, S2):
-        N = S1.shape[0]
-        M = S2.shape[0]
-        C = S1.shape[-1]
-        X = S1.repeat(M, 0)
-        
-        Y = np.tile(S2, (N,1))
-
-        diff = (X-Y).reshape((N, M, C))
-        dist = np.linalg.norm(diff, axis=-1)
-        minimum = np.min(dist, axis=-1)
-        return np.sum(minimum, axis=-1)
-
-    return np.sum(__cdist(S1, S2) + __cdist(S2, S1))
-
+########################### Don't change this code #########################################
 db = Database()
 
 class Batch(db.Entity):
@@ -39,48 +22,25 @@ class Batch(db.Entity):
 class Job(db.Entity):
     index = Required(int)
     name = Required(str)
-    validation = Required(bool)
-    ground_truth = Required(Json)
+    is_sanity_check = Required(bool)
+    data = Optional(Json)
     annotation = Optional(Json)
     owner = Optional(Batch)
 
-class VisualDesign:
-    def __init__(self, path) -> None:
-        self.path = Path(path)
-        self.scores = []
-
-    def to_json(self):
-        return {"name": self.path.stem, "path": self.path.as_posix(), 'scores': self.scores}
-
-def job_fields():
-    return ["index", "name", "validation", "ground_truth", "annotation"]
-
-def job2list(job):
-    return [int(job.index), job.name, int(job.validation), str(job.ground_truth['slope']).replace(".", ","), str(job.annotation['slope']).replace(".", ",")]
 
 class BaseDatabaseManager: 
-    def __init__(self, dataset_path, batch_size, n_participants_per_job=1, sanity_check_path=None, n_sanity_checks=0, reset=False) -> None:
+    def __init__(self, jobs_file, batch_size, n_annotators_per_job=3, n_sanity_checks=0, reset=False) -> None:
         super().__init__()
         self.batch_size = batch_size
-        self.n_participants_per_job = n_participants_per_job
-        self.data = self.get_data(dataset_path)
-        self.sanity_checks = []
-        self.n_sanity_checks = 0
-        if sanity_check_path:
-            self.sanity_checks = self.get_sanity_check_data(sanity_check_path)
-            self.n_sanity_checks = n_sanity_checks
+        self.jobs_file = jobs_file
+        self.n_sanity_checks = n_sanity_checks
+        self.n_annotators_per_job = n_annotators_per_job
         if reset:
             self.reset_database()
         batches = self.get_batches()
         jobs = self.get_jobs()
         print("Found {} jobs.".format(len(jobs)))
         print("Found {} batches.".format(len(batches)))
-
-    def get_data(self, path):
-        raise NotImplementedError()
-
-    def get_sanity_check_data(self, path):
-        raise NotImplementedError()
 
     def get_image_path(self, name):
         raise NotImplementedError()
@@ -89,11 +49,19 @@ class BaseDatabaseManager:
         raise NotImplementedError()
 
     @db_session
-    def validation_check(self, uuid):
+    def sanity_check(self, uuid):
         raise NotImplementedError()
 
     def add_job(self, data):
         raise NotImplementedError()
+
+    @db_session
+    def job2json(self, batch, job):
+        raise NotImplementedError()
+
+    @db_session
+    def batch2json(self, batch):
+        return [self.job2json(batch, job) for jIdx, job in enumerate(sorted(batch.jobs, key=lambda j:j.index)) if jIdx >= batch.progress]
 
     @db_session
     def submit(self, uuid, name, data):
@@ -146,9 +114,7 @@ class BaseDatabaseManager:
                 b.set(creation_date=None, uuid="", mturkId=uuid1().hex, failed=False, completed=False, progress=0)
                 n += 1    
         return {"cleaned": n}
-    @db_session
-    def batch2json(self, batch):
-        return [{"index": job.index, "uuid": batch.uuid, "name": job.name, "validation": job.validation, "ground_truth": job.ground_truth} for jIdx, job in enumerate(sorted(batch.jobs, key=lambda j:j.index)) if jIdx >= batch.progress]
+    
     @db_session
     def add_batch(self, jobs):
         batch = Batch(mturkId=uuid1().hex, completed=False, failed=False)
@@ -182,7 +148,7 @@ class BaseDatabaseManager:
     def assign(self, uuid):
         if uuid == "":return []
         batches = list(select(b for b in Batch if not b.uuid))
-        if len(batches) == 0: return [{"index": 0, "uuid": uuid, "name": "out_of_data", "validation": False, "ground_truth": {}}]
+        if len(batches) == 0: return [{"index": 0, "uuid": uuid, "name": "out_of_data", "validation": False, "data": {}}]
         [batch] = np.random.choice(batches, size=1)
         batch.set(uuid=uuid, creation_date=time.time(), progress=0)
         return self.batch2json(batch)
@@ -210,9 +176,16 @@ class BaseDatabaseManager:
 
     @db_session
     def user_finished(self, uuid):
+        def __check(uuid):
+            batch = self.get_batch_user(uuid)
+            if len(batch) == 0: return False
+            if len(batch) == 1:
+                self.sanity_check(uuid)
+            return False
         batch = list(select(b for b in Batch if b.uuid == uuid))
         if len(batch) == 0: return "Session expired!"
-        success = self.validation_check(uuid)
+        
+        success = __check(uuid)
         batch = batch[0]
         completed = all([bool(job.annotation) for job in batch.jobs])
         batch.set(completed=completed, failed=not success)
@@ -229,10 +202,15 @@ class BaseDatabaseManager:
             print("Deleting {} jobs.".format(len(jobs)))
             for job in jobs:
                 job.delete()
+
+        with open(self.jobs_file, "r") as jsonfile:
+            data_list = json.load(jsonfile)
+            targets       = [d for d in data_list if not d["is_sanity_check"]]
+            sanity_checks = [d for d in data_list if d["is_sanity_check"]]
         
-        for _ in range(self.n_participants_per_job):
+        for i in range(self.n_annotators_per_job):
             jobs = []
-            for data in tqdm(self.data, desc="sync jobs..."):
+            for data in tqdm(targets, desc="sync jobs for Annotator {}/{}.".format(i+1, self.n_annotators_per_job)):
                 jobs.append(self.add_job(data))
             jobs = np.array(jobs)
             np.random.shuffle(jobs)
@@ -242,15 +220,15 @@ class BaseDatabaseManager:
             
             batched_jobs = np.array(jobs[0:n_batches * self.batch_size]).reshape((n_batches, self.batch_size)).tolist()
             for batch in tqdm(batched_jobs, "add batches"):
-                if self.sanity_checks:
-                    batch += [self.add_job(data) for data in np.random.choice(self.sanity_checks, size=self.n_sanity_checks, replace=False)]
+                if sanity_checks and self.n_sanity_checks > 0:
+                    batch += [self.add_job(data) for data in np.random.choice(sanity_checks, size=self.n_sanity_checks, replace=False)]
                 self.add_batch(batch)
             
             
             remaining_jobs = np.array(jobs[n_batches * self.batch_size:]).tolist()
             if len(remaining_jobs) > 0:
-                if self.sanity_checks:
-                    remaining_jobs += [self.add_job(data) for data in np.random.choice(self.sanity_checks, size=self.n_sanity_checks, replace=False)]
+                if sanity_checks and self.n_sanity_checks > 0:
+                    remaining_jobs += [self.add_job(data) for data in np.random.choice(sanity_checks, size=self.n_sanity_checks, replace=False)]
                 self.add_batch(remaining_jobs)
             
 
@@ -259,117 +237,48 @@ class BaseDatabaseManager:
         db.bind(config)
         db.generate_mapping(create_tables=True)
 
-
-class DatabaseManager(BaseDatabaseManager): 
-    def __init__(self, dataset_path, batch_size, n_participants_per_job=1, sanity_check_path=None, n_sanity_checks=0, reset=False, sanity_threshold=0.1) -> None:
-        super().__init__(dataset_path, batch_size, n_participants_per_job, sanity_check_path, n_sanity_checks, reset)
-        self.sanity_threshold = sanity_threshold
-
-    def get_data(self, path):
-        return [img for img in Path(path).glob('*') if img.suffix == '.jpg']
-
-    def get_sanity_check_data(self, path):
-        return [img for img in Path(path).glob('*') if img.suffix == '.jpg']
-
-    def get_image_path(self, name):
-        for path in self.data:
-            if path.stem == name:
-                return path
-        for path in self.sanity_checks:
-            if path.stem == name:
-                return path
-        return None
-
-    def submit_annotation(self, job, data):
-        job.annotation = {'slope': data["slope"]}
-
-    @db_session
-    def validation_check(self, uuid):
-        errors = []
-        batch = self.get_batch_user(uuid)
-        if len(batch) == 0: return False
-        if len(batch) == 1:
-            batch = batch[0]
-            for job in batch.jobs:
-                if job.validation:
-                    gt   = float(job.ground_truth["slope"])
-                    anno = float(job.annotation["slope"])
-                    errors.append(abs(gt - anno))
-            error = np.mean(errors)
-            return error <= self.sanity_threshold
-        return False
-
-    @db_session
-    def poor_quality(self, batch):
-        def to_degree(value):
-            return np.rad2deg((float(value) / 2) * (np.pi / 2))
-        if batch.failed: return True        
-        failed = 0
-        for job in batch.jobs:
-            stddev = float(job["name"].split("_")[0].replace("stddev", ""))
-            gt   = float(job.ground_truth["slope"])
-            anno = float(job.annotation["slope"])
-            abserror = abs(gt - anno)
-            if to_degree(abserror) >= 20 and stddev < 0.11:
-                failed += 1
-        return failed >= 5
-
-    @db_session
-    def add_job(self, path):
-        slope = float(path.stem.split("_")[1].replace("slope",""))
-        stddev = float(path.stem.split("_")[0].replace("stddev",""))
-        return Job(index=np.random.randint(1000000), name=path.stem, validation="check" in path.stem, ground_truth={"slope": slope, "stddev": stddev})
+########################################################################################
 
 
-class ClusterEstimationDataset(BaseDatabaseManager):
-    def __init__(self, dataset_path, batch_size, n_participants_per_job=1, sanity_check_path=None, n_sanity_checks=0, reset=False) -> None:
-        super().__init__(dataset_path, batch_size, n_participants_per_job, sanity_check_path, n_sanity_checks, reset)
 
-    def get_data(self, path):
-        return [img for img in Path(path).glob('*') if img.suffix == '.jpg']
 
-    def get_sanity_check_data(self, path):
-        return [img for img in Path(path).glob('*') if img.suffix == '.jpg']
 
-    def get_image_path(self, name):
-        for path in self.data:
-            if path.stem == name:
-                return path
-        for path in self.sanity_checks:
-            if path.stem == name:
-                return path
-        return None
+
+
+
+
+
+########################### This class can be changed if necessary #####################
+class SampleDataset(BaseDatabaseManager):
+    def __init__(self, jobs_file, batch_size, n_annotators_per_job, n_sanity_checks, reset) -> None:
+        super().__init__(jobs_file, batch_size, n_annotators_per_job, n_sanity_checks, reset)
+
+    def get_image_path(self, filename):
+        # Make sure correct file is loaded from disc for a given image name
+        return Path(self.jobs_file).parent/filename
 
     def submit_annotation(self, job, data):
-        def normalize_pixel_centers(center, canvas_dims):
-            x, y = center['x'], center['y']
-            return [x / canvas_dims, 1 - (y / canvas_dims)]
-        annotation = data['annotation']
-        try:
-            job.annotation = int(annotation)
-        except:
-            # normalize centers
-            canvas_dims = data['canvas_dims']
-            job.annotation = [normalize_pixel_centers(c, canvas_dims) for c in annotation]
+        # Maybe preprocess data in to a proper annotation.
+        job.annotation = data
 
     @db_session
-    def validation_check(self, uuid):
-        batch = self.get_batch_user(uuid)
-        if len(batch) == 0: return False
-        if len(batch) == 1:
-            batch = batch[0]
-            chamfer_dist = np.mean([chamfer_distance(np.array([v for v in job.annotation]), np.array([v for v in job.ground_truth['center']])) for job in batch.jobs if not job.validation])
-            print("User {} finished with chamfer distance: {}".format(uuid, chamfer_dist))
-            return chamfer_dist < 0.6
-        return False
+    def sanity_check(self, uuid):
+        # TODO Iterate over annotations given by user with uuid and check if he passes sanity checks.
+        return True
 
     @db_session
-    def add_job(self, path):
-        json_path = path.parents[1] / "meta" / "{}.json".format(path.stem)
-        h5py_path = path.parents[1] / "pcd" / "{}.h5".format(path.stem.split('_')[0])
-        dataset = h5py.File(h5py_path)
-        with open(json_path, "r") as jsonfile:
-            data = json.load(jsonfile)
-        data['center'] = [x.tolist() for x in dataset['center']]
-        dataset.close()
-        return Job(index=np.random.randint(1000000), name=path.stem, validation="sanity" in path.stem, ground_truth=data)
+    def add_job(self, data):
+        # Check if data needs to be preprocessed before stored as Job.
+        data = data["stimuli"]
+        return Job(index=np.random.randint(1000000), name=str(data["id"]), is_sanity_check=data["is_sanity_check"], data=data)
+
+    @db_session
+    def job2json(self, batch, job):
+        # Update fields as needed. This is the Json data exposed to the frontend.
+        return {
+            "index": job.index, 
+            "uuid": batch.uuid, 
+            "name": job.name, 
+            "is_sanity_check": job.is_sanity_check, 
+            "data": job.data
+            }
