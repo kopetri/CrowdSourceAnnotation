@@ -33,3 +33,11 @@ npm start
 ```
 
 A Browser window should open. If not, open Browser and go to http://localhost:3000/tutorial0
+
+
+# Data Loading
+There is a sample_data directory containing images and a json file.
+
+The json file contains all jobs, which are distributed for an online crowd source application.
+
+Check in the backend/\_\_init\_\_.py file, line 12-17 for database parameters.
