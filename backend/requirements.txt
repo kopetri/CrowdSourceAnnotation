@@ -1,0 +1,6 @@
+flask
+numpy
+pony
+opencv-python
+h5py
+tqdm
