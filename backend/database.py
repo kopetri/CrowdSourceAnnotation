@@ -269,8 +269,8 @@ class SampleDataset(BaseDatabaseManager):
     @db_session
     def add_job(self, data):
         # Check if data needs to be preprocessed before stored as Job.
-        data = data["stimuli"]
-        return Job(index=np.random.randint(1000000), name=str(data["id"]), is_sanity_check=data["is_sanity_check"], data=data)
+        job_data = data["stimuli"]
+        return Job(index=np.random.randint(1000000), name=str(data["id"]), is_sanity_check=data["is_sanity_check"], data=job_data)
 
     @db_session
     def job2json(self, batch, job):
